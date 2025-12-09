@@ -47,6 +47,18 @@
         
         <!-- Scrollable Content -->
         <div class="flex-1 overflow-y-auto p-6 space-y-8">
+          <!-- Status & Debug -->
+          <div class="p-4 rounded-xl bg-white/5 border border-white/5 space-y-2">
+            <div class="flex justify-between text-xs">
+              <span class="text-gray-400">人脸检测</span>
+              <span :class="isFaceDetected ? 'text-green-400' : 'text-red-400'">{{ isFaceDetected ? '已锁定' : '搜索中...' }}</span>
+            </div>
+            <div class="flex justify-between text-xs">
+              <span class="text-gray-400">3D 网格数据</span>
+              <span :class="hasGeometry ? 'text-green-400' : 'text-yellow-400'">{{ hasGeometry ? '已加载' : '等待中' }}</span>
+            </div>
+          </div>
+
           <!-- View Mode -->
           <div class="space-y-3">
             <label class="text-xs font-bold text-gray-400 uppercase tracking-wider">
@@ -178,6 +190,8 @@ const meshDensity = ref('high')
 const fps = ref(0)
 const rendererType = ref('检测中...')
 const controlsVisible = ref(true) // New state for toggling UI
+const isFaceDetected = ref(false)
+const hasGeometry = ref(false)
 
 let camera = null
 let faceMesh = null
@@ -296,6 +310,7 @@ const onResults = (results) => {
   isLoading.value = false
   
   if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+    isFaceDetected.value = true
     const landmarks = results.multiFaceLandmarks[0]
     
     // 如果未设置，获取三角剖分索引
@@ -307,9 +322,12 @@ const onResults = (results) => {
           const indices = mesh.getIndexBufferList()
           triangulationIndices = indices
           faceGeometry.setIndex(new THREE.BufferAttribute(indices, 1))
+          hasGeometry.value = true
        } catch (e) {
           console.warn("无法从 API 提取索引", e)
        }
+    } else if (triangulationIndices) {
+       hasGeometry.value = true
     }
 
     // 更新几何体位置
@@ -337,7 +355,8 @@ const onResults = (results) => {
       const x = (0.5 - landmark.x) * scaleX
       const y = (0.5 - landmark.y) * scaleY
       // Z 需要类似地缩放。MediaPipe Z 大致相对于头部宽度为 -1 到 1
-      const z = -landmark.z * scaleX // 启发式
+      // 增加 Z 轴深度感
+      const z = -landmark.z * scaleX * 2.0 
       
       // 更新点云
       positions[index * 3] = x
@@ -353,6 +372,8 @@ const onResults = (results) => {
     pointCloud.geometry.attributes.position.needsUpdate = true
     faceMeshObject.geometry.attributes.position.needsUpdate = true
     faceMeshObject.geometry.computeVertexNormals()
+  } else {
+    isFaceDetected.value = false
   }
 }
 
