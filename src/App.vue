@@ -13,24 +13,24 @@
 
     <!-- UI Controls -->
     <div class="absolute top-4 left-4 z-10 bg-black/50 p-4 rounded-lg backdrop-blur-sm text-white w-64">
-      <h1 class="text-xl font-bold mb-4">Face Mesh WebGPU</h1>
+      <h1 class="text-xl font-bold mb-4">WebGPU 人脸网格</h1>
       
       <div class="space-y-4">
         <div>
-          <label class="block text-sm font-medium mb-1">View Mode</label>
+          <label class="block text-sm font-medium mb-1">显示模式</label>
           <select v-model="viewMode" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1">
-            <option value="camera">Camera + Matrix</option>
-            <option value="model">White Model</option>
+            <option value="camera">摄像头 + 矩阵</option>
+            <option value="model">白模</option>
           </select>
         </div>
 
         <div v-if="viewMode === 'model'">
-          <label class="block text-sm font-medium mb-1">Wireframe</label>
+          <label class="block text-sm font-medium mb-1">线框</label>
           <input type="checkbox" v-model="showWireframe" class="mr-2">
         </div>
 
         <div>
-          <label class="block text-sm font-medium mb-1">Opacity</label>
+          <label class="block text-sm font-medium mb-1">透明度</label>
           <input 
             type="range" 
             v-model.number="opacity" 
@@ -42,16 +42,16 @@
         </div>
 
         <div>
-          <label class="block text-sm font-medium mb-1">Mesh Density (Precision)</label>
+          <label class="block text-sm font-medium mb-1">网格密度 (精度)</label>
           <select v-model="meshDensity" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1">
-            <option value="high">High (468 points)</option>
-            <option value="low">Low (Simplified)</option>
+            <option value="high">高 (468 点)</option>
+            <option value="low">低 (简化)</option>
           </select>
         </div>
         
         <div class="text-xs text-gray-400 mt-2">
           FPS: {{ fps }} <br>
-          Renderer: {{ rendererType }}
+          渲染器: {{ rendererType }}
         </div>
       </div>
     </div>
@@ -60,7 +60,7 @@
     <div v-if="isLoading" class="absolute inset-0 flex items-center justify-center bg-black/80 z-50">
       <div class="text-center">
         <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-white mx-auto mb-4"></div>
-        <p>Loading Face Mesh...</p>
+        <p>正在加载人脸网格...</p>
       </div>
     </div>
   </div>
@@ -82,7 +82,7 @@ const showWireframe = ref(true)
 const opacity = ref(0.5)
 const meshDensity = ref('high')
 const fps = ref(0)
-const rendererType = ref('Detecting...')
+const rendererType = ref('检测中...')
 
 let camera = null
 let faceMesh = null
@@ -92,7 +92,7 @@ let pointCloud, pointsGeometry
 let lastTime = 0
 let frameCount = 0
 
-// Triangulation indices will be loaded from MediaPipe
+// 三角剖分索引将从 MediaPipe 加载
 let triangulationIndices = null
 
 const initThreeJS = async () => {
@@ -101,16 +101,16 @@ const initThreeJS = async () => {
 
   scene = new THREE.Scene()
   
-  // Camera setup
+  // 相机设置
   threeCamera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000)
-  threeCamera.position.z = 2 // Closer for face
+  threeCamera.position.z = 2 // 离脸更近一些
 
-  // Renderer setup - Try WebGPU first
+  // 渲染器设置 - 优先尝试 WebGPU
   try {
     renderer = new WebGPURenderer({ antialias: true, alpha: true })
     rendererType.value = 'WebGPU'
   } catch (e) {
-    console.warn('WebGPU not supported, falling back to WebGL', e)
+    console.warn('不支持 WebGPU，回退到 WebGL', e)
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
     rendererType.value = 'WebGL'
   }
@@ -119,7 +119,7 @@ const initThreeJS = async () => {
   renderer.setPixelRatio(window.devicePixelRatio)
   canvasContainer.value.appendChild(renderer.domElement)
 
-  // Lighting
+  // 灯光
   const ambientLight = new THREE.AmbientLight(0xffffff, 0.5)
   scene.add(ambientLight)
   
@@ -127,11 +127,11 @@ const initThreeJS = async () => {
   directionalLight.position.set(0, 1, 1)
   scene.add(directionalLight)
 
-  // Initialize Geometries
+  // 初始化几何体
   const maxPoints = 468
   const positions = new Float32Array(maxPoints * 3)
   
-  // 1. Point Cloud (Matrix view)
+  // 1. 点云 (矩阵视图)
   pointsGeometry = new THREE.BufferGeometry()
   pointsGeometry.setAttribute('position', new THREE.BufferAttribute(positions.slice(), 3))
   
@@ -144,7 +144,7 @@ const initThreeJS = async () => {
   pointCloud = new THREE.Points(pointsGeometry, pointsMaterial)
   scene.add(pointCloud)
 
-  // 2. Face Mesh (White Model)
+  // 2. 面部网格 (白模)
   faceGeometry = new THREE.BufferGeometry()
   faceGeometry.setAttribute('position', new THREE.BufferAttribute(positions.slice(), 3))
   
@@ -162,11 +162,11 @@ const initThreeJS = async () => {
   
   updateVisibility()
   
-  // Animation Loop
+  // 动画循环
   renderer.setAnimationLoop(() => {
     renderer.render(scene, threeCamera)
     
-    // FPS Counter
+    // FPS 计数器
     const now = performance.now()
     frameCount++
     if (now - lastTime >= 1000) {
@@ -184,8 +184,8 @@ const updateVisibility = () => {
     pointCloud.visible = true
     faceMeshObject.visible = false
     if (videoRef.value) videoRef.value.style.display = 'block'
-    // Transparent background for camera overlay
-    // WebGPURenderer handles alpha differently, but alpha:true in constructor helps
+    // 摄像头覆盖层的透明背景
+    // WebGPURenderer 处理 alpha 的方式不同，但在构造函数中设置 alpha:true 有所帮助
   } else {
     pointCloud.visible = false
     faceMeshObject.visible = true
@@ -203,8 +203,8 @@ const onResults = (results) => {
   if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
     const landmarks = results.multiFaceLandmarks[0]
     
-    // Get Triangulation Indices if not set
-    // Note: enableFaceGeometry: true in setOptions is required for this
+    // 如果未设置，获取三角剖分索引
+    // 注意：需要在 setOptions 中设置 enableFaceGeometry: true
     if (!triangulationIndices && results.multiFaceGeometry && results.multiFaceGeometry.length > 0) {
        try {
           const faceGeo = results.multiFaceGeometry[0]
@@ -213,43 +213,43 @@ const onResults = (results) => {
           triangulationIndices = indices
           faceGeometry.setIndex(new THREE.BufferAttribute(indices, 1))
        } catch (e) {
-          console.warn("Could not extract indices from API", e)
+          console.warn("无法从 API 提取索引", e)
        }
     }
 
-    // Update Geometry Positions
+    // 更新几何体位置
     const positions = pointCloud.geometry.attributes.position.array
     const meshPositions = faceMeshObject.geometry.attributes.position.array
     
-    // Mapping: MediaPipe (0,0 top-left) -> Three.js (0,0 center)
-    // We need to align the 3D mesh with the video feed.
-    // This is tricky without exact camera intrinsics.
-    // We'll use a heuristic scale.
+    // 映射：MediaPipe (0,0 左上) -> Three.js (0,0 中心)
+    // 我们需要将 3D 网格与视频源对齐。
+    // 在没有精确相机内参的情况下，这很棘手。
+    // 我们将使用启发式缩放。
     
     const aspect = window.innerWidth / window.innerHeight
     const fov = threeCamera.fov * (Math.PI / 180)
     const heightAtZ = 2 * threeCamera.position.z * Math.tan(fov / 2)
     const widthAtZ = heightAtZ * aspect
     
-    // Scale factor to match the video feed roughly
+    // 匹配视频源的缩放因子
     const scaleX = widthAtZ 
     const scaleY = heightAtZ 
 
     landmarks.forEach((landmark, index) => {
-      // MediaPipe: x [0, 1], y [0, 1], z (scaled by width)
+      // MediaPipe: x [0, 1], y [0, 1], z (按宽度缩放)
       // Three.js: x [-w/2, w/2], y [h/2, -h/2]
       
       const x = (0.5 - landmark.x) * scaleX
       const y = (0.5 - landmark.y) * scaleY
-      // Z needs to be scaled similarly. MediaPipe Z is roughly -1 to 1 relative to head width
-      const z = -landmark.z * scaleX // Heuristic
+      // Z 需要类似地缩放。MediaPipe Z 大致相对于头部宽度为 -1 到 1
+      const z = -landmark.z * scaleX // 启发式
       
-      // Update Point Cloud
+      // 更新点云
       positions[index * 3] = x
       positions[index * 3 + 1] = y
       positions[index * 3 + 2] = z
       
-      // Update Mesh
+      // 更新网格
       meshPositions[index * 3] = x
       meshPositions[index * 3 + 1] = y
       meshPositions[index * 3 + 2] = z
@@ -273,7 +273,7 @@ onMounted(async () => {
     refineLandmarks: true,
     minDetectionConfidence: 0.5,
     minTrackingConfidence: 0.5,
-    enableFaceGeometry: true // Request geometry data
+    enableFaceGeometry: true // 请求几何数据
   });
   
   faceMesh.onResults(onResults);
