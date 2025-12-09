@@ -14,70 +14,77 @@
     <!-- Toggle Controls Button (Mobile/Clean View) -->
     <button 
       @click="controlsVisible = !controlsVisible"
-      class="absolute top-6 right-6 z-20 p-3 rounded-full bg-black/40 backdrop-blur-md border border-white/10 text-white/80 hover:bg-white/10 hover:text-white transition-all duration-300"
+      class="absolute top-6 right-6 z-20 p-3 rounded-full bg-black/60 backdrop-blur-md border border-white/20 text-white hover:bg-white/20 transition-all duration-300 shadow-lg"
     >
-      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.1a2 2 0 0 1-1-1.72v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
-        <circle cx="12" cy="12" r="3"></circle>
-      </svg>
+      <svg v-if="!controlsVisible" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+      <svg v-else xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
     </button>
 
-    <!-- Modern Glassmorphism Control Panel -->
+    <!-- Sidebar Control Panel -->
     <transition
       enter-active-class="transition ease-out duration-300"
-      enter-from-class="opacity-0 translate-x-10"
-      enter-to-class="opacity-100 translate-x-0"
+      enter-from-class="translate-x-full"
+      enter-to-class="translate-x-0"
       leave-active-class="transition ease-in duration-200"
-      leave-from-class="opacity-100 translate-x-0"
-      leave-to-class="opacity-0 translate-x-10"
+      leave-from-class="translate-x-0"
+      leave-to-class="translate-x-full"
     >
-      <div v-if="controlsVisible" class="absolute top-20 right-6 z-10 w-80 p-6 rounded-3xl bg-gray-900/60 backdrop-blur-xl border border-white/10 shadow-2xl">
-        <div class="flex items-center justify-between mb-6">
-          <h1 class="text-2xl font-bold bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
+      <div v-if="controlsVisible" class="absolute top-0 right-0 h-full w-80 bg-gray-900/95 backdrop-blur-xl border-l border-white/10 shadow-2xl z-10 flex flex-col">
+        <!-- Header -->
+        <div class="p-6 border-b border-white/10">
+          <h1 class="text-2xl font-bold bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400 bg-clip-text text-transparent mb-2">
             Face Mesh
           </h1>
-          <div class="flex items-center gap-2">
-            <span class="px-2 py-1 rounded-md bg-white/5 border border-white/10 text-[10px] font-mono text-gray-400">
+          <div class="flex items-center gap-2 text-xs font-mono">
+            <span class="px-2 py-1 rounded bg-white/10 text-gray-300">
               {{ rendererType }}
             </span>
-            <span class="px-2 py-1 rounded-md bg-green-500/20 border border-green-500/30 text-[10px] font-mono text-green-400">
+            <span class="px-2 py-1 rounded bg-green-500/20 text-green-400 border border-green-500/30">
               {{ fps }} FPS
             </span>
           </div>
         </div>
         
-        <div class="space-y-6">
+        <!-- Scrollable Content -->
+        <div class="flex-1 overflow-y-auto p-6 space-y-8">
           <!-- View Mode -->
-          <div class="group">
-            <label class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3 block group-hover:text-blue-400 transition-colors">
+          <div class="space-y-3">
+            <label class="text-xs font-bold text-gray-400 uppercase tracking-wider">
               显示模式
             </label>
-            <div class="grid grid-cols-2 gap-2 p-1 bg-black/20 rounded-xl border border-white/5">
+            <div class="grid grid-cols-2 gap-3">
               <button 
                 @click="viewMode = 'camera'"
-                class="px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200"
-                :class="viewMode === 'camera' ? 'bg-white/10 text-white shadow-lg' : 'text-gray-500 hover:text-gray-300'"
+                class="flex flex-col items-center justify-center p-3 rounded-xl border transition-all duration-200"
+                :class="viewMode === 'camera' ? 'bg-blue-600/20 border-blue-500 text-blue-400' : 'bg-white/5 border-transparent text-gray-400 hover:bg-white/10'"
               >
-                AR 视图
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mb-2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>
+                <span class="text-xs font-medium">AR 视图</span>
               </button>
               <button 
                 @click="viewMode = 'model'"
-                class="px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200"
-                :class="viewMode === 'model' ? 'bg-white/10 text-white shadow-lg' : 'text-gray-500 hover:text-gray-300'"
+                class="flex flex-col items-center justify-center p-3 rounded-xl border transition-all duration-200"
+                :class="viewMode === 'model' ? 'bg-purple-600/20 border-purple-500 text-purple-400' : 'bg-white/5 border-transparent text-gray-400 hover:bg-white/10'"
               >
-                3D 白模
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mb-2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+                <span class="text-xs font-medium">3D 白模</span>
               </button>
             </div>
           </div>
 
           <!-- Model Options -->
-          <div v-if="viewMode === 'model'" class="space-y-4 animate-fade-in">
-            <div class="flex items-center justify-between">
-              <label class="text-sm font-medium text-gray-300">显示线框</label>
+          <div v-if="viewMode === 'model'" class="space-y-6 animate-fade-in">
+            <div class="flex items-center justify-between p-4 rounded-xl bg-white/5 border border-white/5">
+              <div class="flex items-center gap-3">
+                <div class="p-2 rounded-lg bg-purple-500/20 text-purple-400">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="3" y1="15" x2="21" y2="15"></line><line x1="9" y1="3" x2="9" y2="21"></line><line x1="15" y1="3" x2="15" y2="21"></line></svg>
+                </div>
+                <span class="text-sm font-medium text-gray-200">显示线框</span>
+              </div>
               <button 
                 @click="showWireframe = !showWireframe"
                 class="w-12 h-6 rounded-full transition-colors duration-300 focus:outline-none relative"
-                :class="showWireframe ? 'bg-purple-500/50' : 'bg-gray-700'"
+                :class="showWireframe ? 'bg-purple-500' : 'bg-gray-700'"
               >
                 <div 
                   class="absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform duration-300 shadow-sm"
@@ -88,10 +95,10 @@
           </div>
 
           <!-- Opacity Slider -->
-          <div>
-            <div class="flex justify-between mb-2">
-              <label class="text-xs font-semibold text-gray-400 uppercase tracking-wider">透明度</label>
-              <span class="text-xs font-mono text-gray-500">{{ Math.round(opacity * 100) }}%</span>
+          <div class="space-y-3">
+            <div class="flex justify-between items-end">
+              <label class="text-xs font-bold text-gray-400 uppercase tracking-wider">透明度</label>
+              <span class="text-xs font-mono text-purple-400 bg-purple-500/10 px-2 py-0.5 rounded">{{ Math.round(opacity * 100) }}%</span>
             </div>
             <input 
               type="range" 
@@ -99,19 +106,19 @@
               min="0" 
               max="1" 
               step="0.05" 
-              class="w-full h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-purple-500 hover:accent-purple-400 transition-all"
+              class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-purple-500 hover:accent-purple-400 transition-all"
             >
           </div>
 
           <!-- Mesh Density -->
-          <div>
-            <label class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3 block">
+          <div class="space-y-3">
+            <label class="text-xs font-bold text-gray-400 uppercase tracking-wider">
               网格精度
             </label>
             <div class="relative">
               <select 
                 v-model="meshDensity" 
-                class="w-full bg-black/20 border border-white/10 rounded-xl px-4 py-3 text-sm text-white appearance-none focus:outline-none focus:border-purple-500/50 focus:ring-1 focus:ring-purple-500/50 transition-all cursor-pointer hover:bg-black/30"
+                class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-white appearance-none focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 transition-all cursor-pointer hover:bg-white/10"
               >
                 <option value="high" class="bg-gray-900">高精度 (468 顶点)</option>
                 <option value="low" class="bg-gray-900">低精度 (性能优先)</option>
@@ -124,8 +131,10 @@
         </div>
         
         <!-- Footer -->
-        <div class="mt-8 pt-6 border-t border-white/5 text-center">
-          <p class="text-[10px] text-gray-600 uppercase tracking-widest">Powered by WebGPU & MediaPipe</p>
+        <div class="p-6 border-t border-white/10 bg-black/20">
+          <p class="text-[10px] text-gray-500 uppercase tracking-widest text-center font-medium">
+            Powered by WebGPU & MediaPipe
+          </p>
         </div>
       </div>
     </transition>
