@@ -68,8 +68,9 @@
 
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
-import { FaceMesh } from '@mediapipe/face_mesh'
-import { Camera } from '@mediapipe/camera_utils'
+// MediaPipe is loaded via CDN in index.html to avoid bundler issues
+// const FaceMesh = window.FaceMesh
+// const Camera = window.Camera
 import * as THREE from 'three'
 import { WebGPURenderer } from 'three/webgpu'
 
@@ -263,7 +264,7 @@ const onResults = (results) => {
 onMounted(async () => {
   await initThreeJS()
   
-  faceMesh = new FaceMesh({locateFile: (file) => {
+  faceMesh = new window.FaceMesh({locateFile: (file) => {
     return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
   }});
   
@@ -278,7 +279,7 @@ onMounted(async () => {
   faceMesh.onResults(onResults);
   
   if (videoRef.value) {
-    camera = new Camera(videoRef.value, {
+    camera = new window.Camera(videoRef.value, {
       onFrame: async () => {
         await faceMesh.send({image: videoRef.value});
       },
