@@ -9,17 +9,17 @@
     ></video>
 
     <!-- Canvas for Three.js -->
-    <canvas ref="canvasRef" class="absolute top-0 left-0 w-full h-full block"></canvas>
+    <div ref="canvasContainer" class="absolute top-0 left-0 w-full h-full block"></div>
 
     <!-- UI Controls -->
-    <div class="absolute top-4 left-4 z-10 bg-black/50 p-4 rounded-lg backdrop-blur-sm text-white">
+    <div class="absolute top-4 left-4 z-10 bg-black/50 p-4 rounded-lg backdrop-blur-sm text-white w-64">
       <h1 class="text-xl font-bold mb-4">Face Mesh WebGPU</h1>
       
       <div class="space-y-4">
         <div>
           <label class="block text-sm font-medium mb-1">View Mode</label>
           <select v-model="viewMode" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1">
-            <option value="camera">Camera + Overlay</option>
+            <option value="camera">Camera + Matrix</option>
             <option value="model">White Model</option>
           </select>
         </div>
@@ -40,9 +40,18 @@
             class="w-full"
           >
         </div>
+
+        <div>
+          <label class="block text-sm font-medium mb-1">Mesh Density (Precision)</label>
+          <select v-model="meshDensity" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1">
+            <option value="high">High (468 points)</option>
+            <option value="low">Low (Simplified)</option>
+          </select>
+        </div>
         
         <div class="text-xs text-gray-400 mt-2">
-          FPS: {{ fps }}
+          FPS: {{ fps }} <br>
+          Renderer: {{ rendererType }}
         </div>
       </div>
     </div>
@@ -62,25 +71,30 @@ import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import { FaceMesh } from '@mediapipe/face_mesh'
 import { Camera } from '@mediapipe/camera_utils'
 import * as THREE from 'three'
+import { WebGPURenderer } from 'three/webgpu'
 
 const videoRef = ref(null)
-const canvasRef = ref(null)
+const canvasContainer = ref(null)
 const isLoading = ref(true)
 const viewMode = ref('camera')
 const showWireframe = ref(true)
 const opacity = ref(0.5)
+const meshDensity = ref('high')
 const fps = ref(0)
+const rendererType = ref('Detecting...')
 
 let camera = null
 let faceMesh = null
 let scene, threeCamera, renderer
 let faceGeometry, faceMaterial, faceMeshObject
 let pointCloud, pointsGeometry
+let lastTime = 0
+let frameCount = 0
 
-// Face Mesh UVs (simplified for example, normally you'd load full UV map)
-// We will use a standard plane geometry approach or custom buffer geometry updated frame by frame
+// Triangulation indices will be loaded from MediaPipe
+let triangulationIndices = null
 
-const initThreeJS = () => {
+const initThreeJS = async () => {
   const width = window.innerWidth
   const height = window.innerHeight
 
@@ -88,16 +102,21 @@ const initThreeJS = () => {
   
   // Camera setup
   threeCamera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000)
-  threeCamera.position.z = 5
+  threeCamera.position.z = 2 // Closer for face
 
-  // Renderer setup
-  renderer = new THREE.WebGLRenderer({
-    canvas: canvasRef.value,
-    alpha: true,
-    antialias: true
-  })
+  // Renderer setup - Try WebGPU first
+  try {
+    renderer = new WebGPURenderer({ antialias: true, alpha: true })
+    rendererType.value = 'WebGPU'
+  } catch (e) {
+    console.warn('WebGPU not supported, falling back to WebGL', e)
+    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
+    rendererType.value = 'WebGL'
+  }
+  
   renderer.setSize(width, height)
   renderer.setPixelRatio(window.devicePixelRatio)
+  canvasContainer.value.appendChild(renderer.domElement)
 
   // Lighting
   const ambientLight = new THREE.AmbientLight(0xffffff, 0.5)
@@ -107,48 +126,54 @@ const initThreeJS = () => {
   directionalLight.position.set(0, 1, 1)
   scene.add(directionalLight)
 
-  // Face Mesh Geometry
-  // We'll initialize with a buffer geometry that we update
-  const maxPoints = 468 // MediaPipe face mesh points
+  // Initialize Geometries
+  const maxPoints = 468
   const positions = new Float32Array(maxPoints * 3)
   
-  // Points (Dot Matrix)
+  // 1. Point Cloud (Matrix view)
   pointsGeometry = new THREE.BufferGeometry()
-  pointsGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  pointsGeometry.setAttribute('position', new THREE.BufferAttribute(positions.slice(), 3))
   
   const pointsMaterial = new THREE.PointsMaterial({
     color: 0x00ff00,
-    size: 0.05,
+    size: 0.02,
     sizeAttenuation: true
   })
   
   pointCloud = new THREE.Points(pointsGeometry, pointsMaterial)
   scene.add(pointCloud)
 
-  // Face Mask (White Model)
-  // Note: For a proper face mask, we need the triangulation indices from MediaPipe
-  // For this example, I'll stick to points for the "camera" view and try to build a mesh for "model" view
-  // if I can get the triangulation data.
-  
+  // 2. Face Mesh (White Model)
   faceGeometry = new THREE.BufferGeometry()
   faceGeometry.setAttribute('position', new THREE.BufferAttribute(positions.slice(), 3))
-  // We need indices to make faces. MediaPipe provides these. 
-  // For this example, I'll stick to points for the "camera" view and try to build a mesh for "model" view
-  // if I can get the triangulation data.
   
   faceMaterial = new THREE.MeshPhongMaterial({
     color: 0xffffff,
     wireframe: true,
     side: THREE.DoubleSide,
     transparent: true,
-    opacity: 0.5
+    opacity: 0.5,
+    flatShading: true
   })
   
   faceMeshObject = new THREE.Mesh(faceGeometry, faceMaterial)
   scene.add(faceMeshObject)
   
-  // Hide/Show based on initial mode
   updateVisibility()
+  
+  // Animation Loop
+  renderer.setAnimationLoop(() => {
+    renderer.render(scene, threeCamera)
+    
+    // FPS Counter
+    const now = performance.now()
+    frameCount++
+    if (now - lastTime >= 1000) {
+      fps.value = frameCount
+      frameCount = 0
+      lastTime = now
+    }
+  })
 }
 
 const updateVisibility = () => {
@@ -157,20 +182,15 @@ const updateVisibility = () => {
   if (viewMode.value === 'camera') {
     pointCloud.visible = true
     faceMeshObject.visible = false
-    // In camera mode, we want the video feed to be visible behind (handled by CSS/Canvas transparency)
-    // But actually, we are drawing on canvas. 
-    // If we want to see the camera, we can either draw the video to a plane in background
-    // or make the canvas transparent and show the video element behind it.
-    // The video element is currently hidden. Let's show it for camera mode.
     if (videoRef.value) videoRef.value.style.display = 'block'
-    renderer.setClearColor(0x000000, 0) // Transparent background
+    // Transparent background for camera overlay
+    // WebGPURenderer handles alpha differently, but alpha:true in constructor helps
   } else {
     pointCloud.visible = false
     faceMeshObject.visible = true
     faceMaterial.wireframe = showWireframe.value
     faceMaterial.opacity = opacity.value
     if (videoRef.value) videoRef.value.style.display = 'none'
-    renderer.setClearColor(0x1a1a1a, 1) // Solid background
   }
 }
 
@@ -182,56 +202,66 @@ const onResults = (results) => {
   if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
     const landmarks = results.multiFaceLandmarks[0]
     
-    // Update Geometry
+    // Get Triangulation Indices if not set
+    // Note: enableFaceGeometry: true in setOptions is required for this
+    if (!triangulationIndices && results.multiFaceGeometry && results.multiFaceGeometry.length > 0) {
+       try {
+          const faceGeo = results.multiFaceGeometry[0]
+          const mesh = faceGeo.getMesh()
+          const indices = mesh.getIndexBufferList()
+          triangulationIndices = indices
+          faceGeometry.setIndex(new THREE.BufferAttribute(indices, 1))
+       } catch (e) {
+          console.warn("Could not extract indices from API", e)
+       }
+    }
+
+    // Update Geometry Positions
     const positions = pointCloud.geometry.attributes.position.array
+    const meshPositions = faceMeshObject.geometry.attributes.position.array
     
-    // MediaPipe coordinates are normalized [0,1]. We need to map to Three.js world space.
-    // A simple mapping:
-    // x: (0.5 - x) * scale
-    // y: (0.5 - y) * scale
-    // z: -z * scale
+    // Mapping: MediaPipe (0,0 top-left) -> Three.js (0,0 center)
+    // We need to align the 3D mesh with the video feed.
+    // This is tricky without exact camera intrinsics.
+    // We'll use a heuristic scale.
     
-    const scale = 5 // Adjust based on camera distance
     const aspect = window.innerWidth / window.innerHeight
+    const fov = threeCamera.fov * (Math.PI / 180)
+    const heightAtZ = 2 * threeCamera.position.z * Math.tan(fov / 2)
+    const widthAtZ = heightAtZ * aspect
     
+    // Scale factor to match the video feed roughly
+    const scaleX = widthAtZ 
+    const scaleY = heightAtZ 
+
     landmarks.forEach((landmark, index) => {
-      const x = (0.5 - landmark.x) * scale * aspect * 2 // Rough scaling
-      const y = (0.5 - landmark.y) * scale * 2
-      const z = -landmark.z * scale // Depth
+      // MediaPipe: x [0, 1], y [0, 1], z (scaled by width)
+      // Three.js: x [-w/2, w/2], y [h/2, -h/2]
       
+      const x = (0.5 - landmark.x) * scaleX
+      const y = (0.5 - landmark.y) * scaleY
+      // Z needs to be scaled similarly. MediaPipe Z is roughly -1 to 1 relative to head width
+      const z = -landmark.z * scaleX // Heuristic
+      
+      // Update Point Cloud
       positions[index * 3] = x
       positions[index * 3 + 1] = y
       positions[index * 3 + 2] = z
+      
+      // Update Mesh
+      meshPositions[index * 3] = x
+      meshPositions[index * 3 + 1] = y
+      meshPositions[index * 3 + 2] = z
     })
     
     pointCloud.geometry.attributes.position.needsUpdate = true
-    
-    // Update Face Mesh as well
-    const meshPositions = faceMeshObject.geometry.attributes.position.array
-    landmarks.forEach((landmark, index) => {
-        const x = (0.5 - landmark.x) * scale * aspect * 2
-        const y = (0.5 - landmark.y) * scale * 2
-        const z = -landmark.z * scale
-        
-        meshPositions[index * 3] = x
-        meshPositions[index * 3 + 1] = y
-        meshPositions[index * 3 + 2] = z
-    })
     faceMeshObject.geometry.attributes.position.needsUpdate = true
-    
-    // If we haven't set indices yet, we should. 
-    // MediaPipe FaceMesh triangulation indices are constant.
-    // For this demo, we might skip full triangulation if we don't have the constant array handy,
-    // but it's better to have it for the "White Model" look.
-    // I will try to fetch or define a simplified set if possible, or just rely on points for now if indices are missing.
-    // (In a real app, you'd import { TRIANGULATION } from a constant file)
+    faceMeshObject.geometry.computeVertexNormals()
   }
-  
-  renderer.render(scene, threeCamera)
 }
 
 onMounted(async () => {
-  initThreeJS()
+  await initThreeJS()
   
   faceMesh = new FaceMesh({locateFile: (file) => {
     return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
@@ -241,7 +271,8 @@ onMounted(async () => {
     maxNumFaces: 1,
     refineLandmarks: true,
     minDetectionConfidence: 0.5,
-    minTrackingConfidence: 0.5
+    minTrackingConfidence: 0.5,
+    enableFaceGeometry: true // Request geometry data
   });
   
   faceMesh.onResults(onResults);
