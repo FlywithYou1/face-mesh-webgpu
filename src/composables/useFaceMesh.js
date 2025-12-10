@@ -69,11 +69,20 @@ export function useFaceMesh(videoRef, canvasContainer) {
   let recordedChunks = []
   let textureLoader = new THREE.TextureLoader()
   let currentTexture = null
+  let resizeListenerAttached = false
 
   const isMobile = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(pointer:coarse)').matches
 
+  const getViewportSize = () => {
+    const width = canvasContainer.value?.clientWidth || window.innerWidth
+    const height = canvasContainer.value?.clientHeight || window.innerHeight
+    return { width, height }
+  }
+
   // --- 资源清理 ---
   const disposeResources = () => {
+    stopRecording()
+    detachResizeListener()
     if (renderer) {
       renderer.setAnimationLoop(null)
       animationLoopAttached = false
@@ -87,6 +96,7 @@ export function useFaceMesh(videoRef, canvasContainer) {
     faceMaterial?.dispose()
     particlesGeometry?.dispose()
     particlesMaterial?.dispose()
+    currentTexture?.dispose()
     
     if (renderer) {
       renderer.dispose()
@@ -96,6 +106,12 @@ export function useFaceMesh(videoRef, canvasContainer) {
     faceMeshObject = null
     particleSystem = null
     hatObject = null
+    faceMaterial = null
+    faceGeometry = null
+    pointsGeometry = null
+    pointsMaterial = null
+    particlesGeometry = null
+    particlesMaterial = null
     scene = null
     renderer = null
     threeCamera = null
@@ -105,6 +121,8 @@ export function useFaceMesh(videoRef, canvasContainer) {
     hasGeometry.value = false
     triangulationIndices = null
     normalsFrame = 0
+    mediaRecorder = null
+    recordedChunks = []
   }
 
   const stopMedia = async () => {
@@ -120,12 +138,13 @@ export function useFaceMesh(videoRef, canvasContainer) {
 
   // --- Three.js 初始化 ---
   const createRenderer = async (width, height) => {
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, isMobile ? 1.5 : 2)
     if (typeof navigator !== 'undefined' && navigator.gpu) {
       try {
         const webgpuRenderer = new WebGPURenderer({ antialias: true, alpha: true })
         await webgpuRenderer.init()
         webgpuRenderer.setSize(width, height)
-        webgpuRenderer.setPixelRatio(window.devicePixelRatio)
+        webgpuRenderer.setPixelRatio(pixelRatio)
         rendererType.value = 'WebGPU'
         return webgpuRenderer
       } catch (e) {
@@ -135,14 +154,13 @@ export function useFaceMesh(videoRef, canvasContainer) {
 
     const webglRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
     webglRenderer.setSize(width, height)
-    webglRenderer.setPixelRatio(window.devicePixelRatio)
+    webglRenderer.setPixelRatio(pixelRatio)
     rendererType.value = 'WebGL'
     return webglRenderer
   }
 
   const initThreeJS = async () => {
-    const width = window.innerWidth
-    const height = window.innerHeight
+    const { width, height } = getViewportSize()
 
     scene = new THREE.Scene()
     
@@ -249,6 +267,7 @@ export function useFaceMesh(videoRef, canvasContainer) {
     hatObject.visible = false
     scene.add(hatObject)
     
+    attachResizeListener()
     updateVisibility()
     
     // 动画循环
@@ -356,6 +375,7 @@ export function useFaceMesh(videoRef, canvasContainer) {
       // 3. 顶点更新
       const targetPoints = meshDensity.value === 'low' ? 156 : landmarks.length
       const step = meshDensity.value === 'low' ? Math.ceil(landmarks.length / targetPoints) : 1
+      let drawCount = 0
 
       for (let i = 0; i < MAX_POINTS; i++) {
         if (i < landmarks.length) {
@@ -396,22 +416,20 @@ export function useFaceMesh(videoRef, canvasContainer) {
           meshPositions[base + 1] = y
           meshPositions[base + 2] = z
 
-          // 更新点云 (抽样)
-          if (i % step === 0) {
-            positions[base] = x
-            positions[base + 1] = y
-            positions[base + 2] = z
-          } else {
-            // 将未绘制的点移出视锥体，避免 NaN 触发几何体裁剪
-            positions[base] = 9999
-            positions[base + 1] = 9999
-            positions[base + 2] = 9999
+          // 更新点云 (抽样，压紧 drawRange 前部)
+          if (i % step === 0 && drawCount < MAX_POINTS) {
+            const pointBase = drawCount * 3
+            positions[pointBase] = x
+            positions[pointBase + 1] = y
+            positions[pointBase + 2] = z
+            drawCount++
           }
         }
       }
       
-      pointCloud.geometry.setDrawRange(0, MAX_POINTS)
+      pointCloud.geometry.setDrawRange(0, drawCount)
       pointCloud.geometry.attributes.position.needsUpdate = true
+      faceMeshObject.geometry.setDrawRange(0, landmarks.length)
       faceMeshObject.geometry.attributes.position.needsUpdate = true
 
       // 更新帽子位置 (简单绑定到额头中心: 10)
@@ -487,6 +505,7 @@ export function useFaceMesh(videoRef, canvasContainer) {
           faceMaterial.roughness = 0.5
           faceMaterial.metalness = 0.1
           faceMaterial.emissive.setHex(0x000000)
+          faceMaterial.emissiveIntensity = 0
           break
         case 'hologram':
           faceMaterial.wireframe = false
@@ -521,6 +540,7 @@ export function useFaceMesh(videoRef, canvasContainer) {
           faceMaterial.roughness = 0.5
           faceMaterial.metalness = 0.0
           faceMaterial.emissive.setHex(0x000000)
+          faceMaterial.emissiveIntensity = 0
           if (currentTexture) {
             faceMaterial.map = currentTexture
             faceMaterial.color.setHex(0xffffff) // Reset color for texture
@@ -535,6 +555,10 @@ export function useFaceMesh(videoRef, canvasContainer) {
   // --- 纹理加载 ---
   const loadTexture = (file) => {
     if (!file) return
+    if (currentTexture) {
+      currentTexture.dispose()
+      currentTexture = null
+    }
     const reader = new FileReader()
     reader.onload = (e) => {
       const img = new Image()
@@ -584,6 +608,24 @@ export function useFaceMesh(videoRef, canvasContainer) {
   // --- 录制功能 ---
   const startRecording = () => {
     if (!renderer || !videoRef.value) return
+    if (mediaRecorder && mediaRecorder.state === 'recording') return
+    if (typeof MediaRecorder === 'undefined') {
+      errorMessage.value = '当前浏览器不支持录像功能'
+      return
+    }
+
+    const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+      ? 'video/webm;codecs=vp9'
+      : MediaRecorder.isTypeSupported('video/webm;codecs=vp8')
+        ? 'video/webm;codecs=vp8'
+        : MediaRecorder.isTypeSupported('video/webm')
+          ? 'video/webm'
+          : ''
+
+    if (!mimeType) {
+      errorMessage.value = '当前浏览器不支持 WebM 录像格式'
+      return
+    }
     
     // 创建混合 Canvas
     const canvas = document.createElement('canvas')
@@ -592,7 +634,7 @@ export function useFaceMesh(videoRef, canvasContainer) {
     const ctx = canvas.getContext('2d')
     
     const stream = canvas.captureStream(30) // 30 FPS
-    mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' })
+    mediaRecorder = new MediaRecorder(stream, { mimeType })
     recordedChunks = []
     
     mediaRecorder.ondataavailable = (e) => {
@@ -608,6 +650,8 @@ export function useFaceMesh(videoRef, canvasContainer) {
       a.click()
       URL.revokeObjectURL(url)
       isRecording.value = false
+      mediaRecorder = null
+      recordedChunks = []
     }
 
     // 启动混合绘制循环
@@ -636,23 +680,44 @@ export function useFaceMesh(videoRef, canvasContainer) {
   }
 
   const stopRecording = () => {
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-      mediaRecorder.stop()
+    if (mediaRecorder) {
+      if (mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop()
+      } else {
+        mediaRecorder.ondataavailable = null
+        mediaRecorder.onstop = null
+        mediaRecorder = null
+        recordedChunks = []
+      }
     }
   }
 
   // --- 窗口大小调整 ---
   const onResize = () => {
     if (!threeCamera || !renderer) return
-    const width = window.innerWidth
-    const height = window.innerHeight
+    const { width, height } = getViewportSize()
     threeCamera.aspect = width / height
     threeCamera.updateProjectionMatrix()
     renderer.setSize(width, height)
   }
 
+  const attachResizeListener = () => {
+    if (!resizeListenerAttached) {
+      window.addEventListener('resize', onResize)
+      resizeListenerAttached = true
+    }
+  }
+
+  const detachResizeListener = () => {
+    if (resizeListenerAttached) {
+      window.removeEventListener('resize', onResize)
+      resizeListenerAttached = false
+    }
+  }
+
   // --- 启动流程 ---
   const start = async () => {
+    await stopMedia()
     disposeResources()
     errorMessage.value = ''
     isLoading.value = true
@@ -676,7 +741,6 @@ export function useFaceMesh(videoRef, canvasContainer) {
     // 3. 初始化 Three.js
     try {
       await initThreeJS()
-      window.addEventListener('resize', onResize)
     } catch (e) {
       errorMessage.value = '渲染引擎初始化失败'
       isLoading.value = false
@@ -770,8 +834,8 @@ export function useFaceMesh(videoRef, canvasContainer) {
             }
           }
         },
-        width: 1280,
-        height: 720,
+        width: isMobile ? 960 : 1280,
+        height: isMobile ? 540 : 720,
         facingMode: 'user'
       })
       
@@ -801,7 +865,7 @@ export function useFaceMesh(videoRef, canvasContainer) {
   onUnmounted(() => {
     stopMedia()
     disposeResources()
-    window.removeEventListener('resize', onResize)
+    detachResizeListener()
     if (loadingTimer) clearTimeout(loadingTimer)
   })
 
