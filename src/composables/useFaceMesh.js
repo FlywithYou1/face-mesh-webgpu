@@ -67,7 +67,6 @@ export function useFaceMesh(videoRef, canvasContainer) {
   let faceMissingFrames = 0
   let mediaRecorder = null
   let recordedChunks = []
-  let textureLoader = new THREE.TextureLoader()
   let currentTexture = null
   let resizeListenerAttached = false
 
@@ -351,8 +350,7 @@ export function useFaceMesh(videoRef, canvasContainer) {
       // 1. 计算视频渲染尺寸 (object-cover 模拟)
       const videoW = video.videoWidth
       const videoH = video.videoHeight
-      const screenW = window.innerWidth
-      const screenH = window.innerHeight
+      const { width: screenW, height: screenH } = getViewportSize()
       const videoAspect = videoW / videoH
       const screenAspect = screenW / screenH
 
