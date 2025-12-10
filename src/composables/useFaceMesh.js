@@ -77,7 +77,6 @@ export function useFaceMesh(videoRef, canvasContainer) {
     if (renderer) {
       renderer.setAnimationLoop(null)
       animationLoopAttached = false
-      renderer.dispose()
       if (renderer.domElement?.parentElement) {
         renderer.domElement.parentElement.removeChild(renderer.domElement)
       }
@@ -88,6 +87,10 @@ export function useFaceMesh(videoRef, canvasContainer) {
     faceMaterial?.dispose()
     particlesGeometry?.dispose()
     particlesMaterial?.dispose()
+    
+    if (renderer) {
+      renderer.dispose()
+    }
     
     pointCloud = null
     faceMeshObject = null
@@ -711,10 +714,10 @@ export function useFaceMesh(videoRef, canvasContainer) {
         if (cdnSource.value === 'unpkg') return [`https://unpkg.com/@mediapipe/face_mesh@${FACE_MESH_VERSION}/`]
         if (cdnSource.value === 'local') return [localBase]
 
-        // auto: 优先 jsdelivr，其次 unpkg，最后本地
+        // auto: 优先 unpkg (更稳定)，其次 jsdelivr，最后本地
         return [
-          `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@${FACE_MESH_VERSION}/`,
           `https://unpkg.com/@mediapipe/face_mesh@${FACE_MESH_VERSION}/`,
+          `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@${FACE_MESH_VERSION}/`,
           localBase
         ]
       }
