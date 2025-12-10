@@ -9,6 +9,11 @@ export default defineConfig(({ command }) => ({
   server: {
     host: true
   },
+  optimizeDeps: {
+    // Mediapipe 的 wasm/worker 打包在 esbuild 里偶尔会出错，关闭预构建保持原始格式
+    exclude: ['@mediapipe/face_mesh', '@mediapipe/camera_utils']
+  },
+  assetsInclude: ['**/*.wasm', '**/*.data'],
   build: {
     target: 'esnext'
   }
