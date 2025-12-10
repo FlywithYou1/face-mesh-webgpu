@@ -1,5 +1,16 @@
-import { ref, watch, onUnmounted } from 'vue'
+import { ref, watch, onUnmounted, type Ref } from 'vue'
 import * as THREE from 'three'
+import type {
+  BufferGeometry,
+  Mesh,
+  MeshStandardMaterial,
+  PerspectiveCamera,
+  Points,
+  PointsMaterial,
+  Scene,
+  Texture,
+  WebGLRenderer
+} from 'three'
 import { WebGPURenderer } from 'three/webgpu'
 import { UVS } from './uv_coords.js'
 import graphBinary from '@mediapipe/face_mesh/face_mesh.binarypb?url'
@@ -10,13 +21,48 @@ import simdWasmLoader from '@mediapipe/face_mesh/face_mesh_solution_simd_wasm_bi
 import wasm from '@mediapipe/face_mesh/face_mesh_solution_wasm_bin.wasm?url'
 import wasmLoader from '@mediapipe/face_mesh/face_mesh_solution_wasm_bin.js?url'
 
+type Landmark = { x: number; y: number; z: number }
+
+type FaceMeshResult = {
+  multiFaceLandmarks?: Landmark[][]
+  multiFaceGeometry?: Array<{ getMesh(): { getIndexBufferList(): Uint16Array } }>
+}
+
+type FaceMeshInstance = {
+  initialize(): Promise<void>
+  close(): Promise<void>
+  reset?: () => void
+  onResults(cb: (results: FaceMeshResult) => void): void
+  send(input: { image: HTMLVideoElement | HTMLCanvasElement }): Promise<void>
+  setOptions(options: Record<string, unknown>): void
+}
+
+type FaceMeshConstructor = new (config: { locateFile: (file: string) => string }) => FaceMeshInstance
+
+type CameraConfig = {
+  onFrame: () => Promise<void> | void
+  width?: number
+  height?: number
+  facingMode?: 'user' | 'environment'
+}
+
+type CameraInstance = {
+  start(): Promise<void>
+  stop(): Promise<void>
+}
+
+type CameraConstructor = new (video: HTMLVideoElement, config: CameraConfig) => CameraInstance
+
+type Renderer = WebGLRenderer | WebGPURenderer
+type RendererWithLoop = Renderer & { setAnimationLoop: (callback: (() => void) | null) => void }
+
 // 常量配置
 const FACE_MESH_VERSION = '0.4.1633559619'
 const MAX_POINTS = 468
 const CAMERA_Z = 2 // 相机距离
 const CAMERA_FOV = 63 // 更接近真实摄像头的 FOV
 const FACE_LOST_RESET_FRAMES = 120 // 丢脸超过该帧数，自动 reset 管线
-const BUNDLED_FACE_MESH_ASSETS = {
+const BUNDLED_FACE_MESH_ASSETS: Record<string, string> = {
   'face_mesh.binarypb': graphBinary,
   'face_mesh_solution_packed_assets.data': packedAssets,
   'face_mesh_solution_packed_assets_loader.js': packedAssetsLoader,
@@ -26,7 +72,7 @@ const BUNDLED_FACE_MESH_ASSETS = {
   'face_mesh_solution_wasm_bin.wasm': wasm
 }
 
-export function useFaceMesh(videoRef, canvasContainer) {
+export function useFaceMesh(videoRef: Ref<HTMLVideoElement | null>, canvasContainer: Ref<HTMLElement | null>) {
   // 状态
   const isLoading = ref(true)
   const errorMessage = ref('')
@@ -35,39 +81,47 @@ export function useFaceMesh(videoRef, canvasContainer) {
   const rendererType = ref('检测中...')
   const fps = ref(0)
   const isRecording = ref(false)
-  
+
   // 显示控制
-  const viewMode = ref('camera') // 'camera' | 'model'
+  const viewMode = ref<'camera' | 'model'>('camera')
   const showWireframe = ref(true)
   const opacity = ref(0.5)
-  const meshDensity = ref('high')
+  const meshDensity = ref<'high' | 'low'>('high')
   const pointSize = ref(3)
   const pointColor = ref('#6ee7ff')
   const wireframeColor = ref('#ffffff')
-  const materialType = ref('wireframe') // 'wireframe' | 'hologram' | 'solid' | 'texture'
+  const materialType = ref<'wireframe' | 'hologram' | 'solid' | 'texture'>('wireframe')
   const glowIntensity = ref(0)
-  const cdnSource = ref('auto') // auto | jsdelivr | unpkg | local
+  const cdnSource = ref<'auto' | 'jsdelivr' | 'unpkg' | 'local'>('auto')
   const showParticles = ref(false)
   const showHat = ref(false)
 
   // 内部变量
-  let camera = null
-  let faceMesh = null
-  let scene, threeCamera, renderer
-  let faceGeometry, faceMaterial, faceMeshObject
-  let pointCloud, pointsGeometry, pointsMaterial
-  let particleSystem, particlesGeometry, particlesMaterial
-  let hatObject
+  let camera: CameraInstance | null = null
+  let faceMesh: FaceMeshInstance | null = null
+  let scene: Scene | null = null
+  let threeCamera: PerspectiveCamera | null = null
+  let renderer: Renderer | null = null
+  let faceGeometry: BufferGeometry | null = null
+  let faceMaterial: MeshStandardMaterial | null = null
+  let faceMeshObject: Mesh<BufferGeometry, MeshStandardMaterial> | null = null
+  let pointCloud: Points<BufferGeometry, PointsMaterial> | null = null
+  let pointsGeometry: BufferGeometry | null = null
+  let pointsMaterial: PointsMaterial | null = null
+  let particleSystem: Points<BufferGeometry, PointsMaterial> | null = null
+  let particlesGeometry: BufferGeometry | null = null
+  let particlesMaterial: PointsMaterial | null = null
+  let hatObject: Mesh<THREE.ConeGeometry, THREE.MeshPhongMaterial> | null = null
   let lastTime = 0
   let frameCount = 0
   let normalsFrame = 0
-  let loadingTimer = null
+  let loadingTimer: number | null = null
   let animationLoopAttached = false
-  let triangulationIndices = null
+  let triangulationIndices: Uint16Array | null = null
   let faceMissingFrames = 0
-  let mediaRecorder = null
-  let recordedChunks = []
-  let currentTexture = null
+  let mediaRecorder: MediaRecorder | null = null
+  let recordedChunks: Blob[] = []
+  let currentTexture: Texture | null = null
   let resizeListenerAttached = false
 
   const isMobile = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(pointer:coarse)').matches
@@ -82,11 +136,12 @@ export function useFaceMesh(videoRef, canvasContainer) {
   const disposeResources = () => {
     stopRecording()
     detachResizeListener()
-    if (renderer) {
-      renderer.setAnimationLoop(null)
+    const loopRenderer = renderer as RendererWithLoop | null
+    if (loopRenderer) {
+      loopRenderer.setAnimationLoop(null)
       animationLoopAttached = false
-      if (renderer.domElement?.parentElement) {
-        renderer.domElement.parentElement.removeChild(renderer.domElement)
+      if (loopRenderer.domElement?.parentElement) {
+        loopRenderer.domElement.parentElement.removeChild(loopRenderer.domElement)
       }
     }
     pointsGeometry?.dispose()
@@ -96,11 +151,9 @@ export function useFaceMesh(videoRef, canvasContainer) {
     particlesGeometry?.dispose()
     particlesMaterial?.dispose()
     currentTexture?.dispose()
-    
-    if (renderer) {
-      renderer.dispose()
-    }
-    
+
+    renderer?.dispose()
+
     pointCloud = null
     faceMeshObject = null
     particleSystem = null
@@ -114,7 +167,7 @@ export function useFaceMesh(videoRef, canvasContainer) {
     scene = null
     renderer = null
     threeCamera = null
-    
+
     // 重置状态
     isFaceDetected.value = false
     hasGeometry.value = false
@@ -126,19 +179,27 @@ export function useFaceMesh(videoRef, canvasContainer) {
 
   const stopMedia = async () => {
     if (camera) {
-      try { await camera.stop() } catch (e) { console.warn(e) }
+      try {
+        await camera.stop()
+      } catch (e) {
+        console.warn(e)
+      }
       camera = null
     }
     if (faceMesh?.close) {
-      try { await faceMesh.close() } catch (e) { console.warn(e) }
+      try {
+        await faceMesh.close()
+      } catch (e) {
+        console.warn(e)
+      }
       faceMesh = null
     }
   }
 
   // --- Three.js 初始化 ---
-  const createRenderer = async (width, height) => {
+  const createRenderer = async (width: number, height: number): Promise<Renderer | null> => {
     const pixelRatio = Math.min(window.devicePixelRatio || 1, isMobile ? 1.5 : 2)
-    if (typeof navigator !== 'undefined' && navigator.gpu) {
+    if (typeof navigator !== 'undefined' && (navigator as Navigator & { gpu?: unknown }).gpu) {
       try {
         const webgpuRenderer = new WebGPURenderer({ antialias: true, alpha: true })
         await webgpuRenderer.init()
@@ -162,7 +223,7 @@ export function useFaceMesh(videoRef, canvasContainer) {
     const { width, height } = getViewportSize()
 
     scene = new THREE.Scene()
-    
+
     // 相机设置
     threeCamera = new THREE.PerspectiveCamera(CAMERA_FOV, width / height, 0.1, 1000)
     threeCamera.position.z = CAMERA_Z
@@ -179,7 +240,7 @@ export function useFaceMesh(videoRef, canvasContainer) {
       height: '100%',
       pointerEvents: 'none'
     })
-    
+
     if (canvasContainer.value) {
       canvasContainer.value.appendChild(renderer.domElement)
     }
@@ -192,7 +253,7 @@ export function useFaceMesh(videoRef, canvasContainer) {
 
     // 几何体初始化
     const positions = new Float32Array(MAX_POINTS * 3)
-    
+
     // 1. 点云
     pointsGeometry = new THREE.BufferGeometry()
     pointsGeometry.setAttribute('position', new THREE.BufferAttribute(positions.slice(), 3))
@@ -211,7 +272,7 @@ export function useFaceMesh(videoRef, canvasContainer) {
     // 2. 面部网格
     faceGeometry = new THREE.BufferGeometry()
     faceGeometry.setAttribute('position', new THREE.BufferAttribute(positions.slice(), 3))
-    
+
     // 添加 UV 坐标
     const uvArray = new Float32Array(MAX_POINTS * 2)
     for (let i = 0; i < MAX_POINTS; i++) {
@@ -240,10 +301,10 @@ export function useFaceMesh(videoRef, canvasContainer) {
     const particleCount = 100
     particlesGeometry = new THREE.BufferGeometry()
     const pPositions = new Float32Array(particleCount * 3)
-    const pVelocities = []
-    for(let i=0; i<particleCount; i++) {
-      pPositions[i*3] = 0; pPositions[i*3+1] = 0; pPositions[i*3+2] = 0;
-      pVelocities.push({x: (Math.random()-0.5)*0.02, y: (Math.random()-0.5)*0.02, z: (Math.random()-0.5)*0.02})
+    const pVelocities: Array<{ x: number; y: number; z: number }> = []
+    for (let i = 0; i < particleCount; i++) {
+      pPositions[i * 3] = 0; pPositions[i * 3 + 1] = 0; pPositions[i * 3 + 2] = 0
+      pVelocities.push({ x: (Math.random() - 0.5) * 0.02, y: (Math.random() - 0.5) * 0.02, z: (Math.random() - 0.5) * 0.02 })
     }
     particlesGeometry.setAttribute('position', new THREE.BufferAttribute(pPositions, 3))
     particlesMaterial = new THREE.PointsMaterial({
@@ -265,12 +326,13 @@ export function useFaceMesh(videoRef, canvasContainer) {
     hatObject = new THREE.Mesh(hatGeo, hatMat)
     hatObject.visible = false
     scene.add(hatObject)
-    
+
     attachResizeListener()
     updateVisibility()
-    
+
     // 动画循环
-    renderer.setAnimationLoop(() => {
+    ;(renderer as RendererWithLoop).setAnimationLoop(() => {
+      if (!scene || !threeCamera) return
       // 简单的脉冲发光动画
       if (materialType.value === 'hologram' && faceMaterial) {
         const time = performance.now() * 0.001
@@ -278,33 +340,34 @@ export function useFaceMesh(videoRef, canvasContainer) {
       }
 
       // 粒子动画
-      if (showParticles.value && particleSystem && isFaceDetected.value) {
-        const positions = particleSystem.geometry.attributes.position.array
-        const velocities = particleSystem.userData.velocities
+      if (showParticles.value && particleSystem && isFaceDetected.value && faceMeshObject) {
+        const positionsAttr = particleSystem.geometry.attributes.position
+        const positions = positionsAttr.array as Float32Array
+        const velocities = (particleSystem.userData.velocities ?? []) as Array<{ x: number; y: number; z: number }>
         // 假设鼻子尖是索引 4
         const noseIndex = 4
-        const meshPositions = faceMeshObject.geometry.attributes.position.array
+        const meshPositions = faceMeshObject.geometry.attributes.position.array as Float32Array
         const noseX = meshPositions[noseIndex * 3]
         const noseY = meshPositions[noseIndex * 3 + 1]
         const noseZ = meshPositions[noseIndex * 3 + 2]
 
-        for(let i=0; i<particleCount; i++) {
-          positions[i*3] += velocities[i].x
-          positions[i*3+1] += velocities[i].y
-          positions[i*3+2] += velocities[i].z
-          
+        for (let i = 0; i < particleCount; i++) {
+          positions[i * 3] += velocities[i].x
+          positions[i * 3 + 1] += velocities[i].y
+          positions[i * 3 + 2] += velocities[i].z
+
           // 简单重置逻辑
-          if (Math.abs(positions[i*3] - noseX) > 0.5 || Math.random() < 0.02) {
-             positions[i*3] = noseX
-             positions[i*3+1] = noseY
-             positions[i*3+2] = noseZ
+          if (Math.abs(positions[i * 3] - noseX) > 0.5 || Math.random() < 0.02) {
+            positions[i * 3] = noseX
+            positions[i * 3 + 1] = noseY
+            positions[i * 3 + 2] = noseZ
           }
         }
-        particleSystem.geometry.attributes.position.needsUpdate = true
+        positionsAttr.needsUpdate = true
       }
 
       renderer.render(scene, threeCamera)
-      
+
       const now = performance.now()
       frameCount++
       if (now - lastTime >= 1000) {
@@ -317,33 +380,33 @@ export function useFaceMesh(videoRef, canvasContainer) {
   }
 
   // --- 核心逻辑：坐标对齐与更新 ---
-  const onResults = (results) => {
-    // console.log('onResults', results) // Debug log
+  const onResults = (results: FaceMeshResult) => {
+    if (!pointCloud || !faceMeshObject || !threeCamera) return
     isLoading.value = false
     errorMessage.value = ''
-    if (loadingTimer) clearTimeout(loadingTimer)
-    
+    if (loadingTimer !== null) clearTimeout(loadingTimer)
+
     if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
       isFaceDetected.value = true
       faceMissingFrames = 0
       const landmarks = results.multiFaceLandmarks[0]
-      
+
       // 获取三角剖分索引
       if (!triangulationIndices && results.multiFaceGeometry && results.multiFaceGeometry.length > 0) {
-         try {
-           const indices = results.multiFaceGeometry[0].getMesh().getIndexBufferList()
-           triangulationIndices = indices
-           faceGeometry.setIndex(new THREE.BufferAttribute(indices, 1))
-           hasGeometry.value = true
-         } catch (e) { console.warn("无法提取索引", e) }
+        try {
+          const indices = results.multiFaceGeometry[0].getMesh().getIndexBufferList()
+          triangulationIndices = indices
+          faceGeometry?.setIndex(new THREE.BufferAttribute(indices, 1))
+          hasGeometry.value = true
+        } catch (e) { console.warn('无法提取索引', e) }
       } else if (triangulationIndices) {
-         hasGeometry.value = true
+        hasGeometry.value = true
       }
 
       // 坐标计算
-      const positions = pointCloud.geometry.attributes.position.array
-      const meshPositions = faceMeshObject.geometry.attributes.position.array
-      
+      const positions = pointCloud.geometry.attributes.position.array as Float32Array
+      const meshPositions = faceMeshObject.geometry.attributes.position.array as Float32Array
+
       const video = videoRef.value
       if (!video || video.videoWidth === 0) return
 
@@ -354,7 +417,7 @@ export function useFaceMesh(videoRef, canvasContainer) {
       const videoAspect = videoW / videoH
       const screenAspect = screenW / screenH
 
-      let renderW, renderH
+      let renderW: number, renderH: number
       if (screenAspect > videoAspect) {
         renderW = screenW
         renderH = screenW / videoAspect
@@ -369,7 +432,7 @@ export function useFaceMesh(videoRef, canvasContainer) {
       const visibleHeightAtZero = 2 * Math.tan(fovRad / 2) * CAMERA_Z
       // 像素到世界单位的比例 (在 z=0 平面)
       const pxToWorld = visibleHeightAtZero / screenH
-      
+
       // 3. 顶点更新
       const targetPoints = meshDensity.value === 'low' ? 156 : landmarks.length
       const step = meshDensity.value === 'low' ? Math.ceil(landmarks.length / targetPoints) : 1
@@ -383,7 +446,7 @@ export function useFaceMesh(videoRef, canvasContainer) {
           // landmark.x/y 是相对于视频帧的 0-1
           const dx = (landmark.x - 0.5) * renderW
           const dy = (landmark.y - 0.5) * renderH
-          
+
           // 原始 Z 深度 (估算值)
           // landmark.z 是相对于头部宽度的比例，需要缩放
           // 这里的系数 1.5 是经验值，用于调整 3D 深度感
@@ -393,11 +456,11 @@ export function useFaceMesh(videoRef, canvasContainer) {
           // 顶点在世界坐标系中的实际 Z 值 (假设物体在相机前方)
           // 物体 Z = 0 时，depth = CAMERA_Z
           // 我们希望 zDepth 表现为相对于 Z=0 平面的偏移
-          const worldZ = zDepth 
+          const worldZ = zDepth
 
           // 顶点到相机的距离
           const distanceToCamera = CAMERA_Z - worldZ
-          
+
           // 透视投影补偿因子
           // 当点远离相机时 (distance > CAMERA_Z)，它在屏幕上会变小
           // 为了让它投影回屏幕时依然对齐 MediaPipe 的 2D 坐标，我们需要放大它的 X/Y
@@ -406,9 +469,9 @@ export function useFaceMesh(videoRef, canvasContainer) {
           const x = dx * pxToWorld * perspectiveFactor
           const y = -dy * pxToWorld * perspectiveFactor
           const z = worldZ
-          
+
           const base = i * 3
-          
+
           // 更新网格 (全量)
           meshPositions[base] = x
           meshPositions[base + 1] = y
@@ -424,7 +487,7 @@ export function useFaceMesh(videoRef, canvasContainer) {
           }
         }
       }
-      
+
       pointCloud.geometry.setDrawRange(0, drawCount)
       pointCloud.geometry.attributes.position.needsUpdate = true
       faceMeshObject.geometry.setDrawRange(0, landmarks.length)
@@ -438,7 +501,7 @@ export function useFaceMesh(videoRef, canvasContainer) {
         const z = meshPositions[foreheadIndex * 3 + 2]
         hatObject.position.set(x, y + 0.2, z)
         // 简单旋转跟随 (可以优化为使用旋转矩阵)
-        // hatObject.lookAt(camera.position) 
+        // hatObject.lookAt(camera.position)
       }
 
       // 法线计算优化
@@ -472,12 +535,14 @@ export function useFaceMesh(videoRef, canvasContainer) {
       const canShowMesh = hasGeometry.value
       pointCloud.visible = !canShowMesh
       faceMeshObject.visible = canShowMesh
-      
-      faceMaterial.wireframe = showWireframe.value
-      faceMaterial.opacity = opacity.value
+
+      if (faceMaterial) {
+        faceMaterial.wireframe = showWireframe.value
+        faceMaterial.opacity = opacity.value
+      }
       if (videoRef.value) videoRef.value.style.display = 'none'
     }
-    
+
     if (pointsMaterial) {
       pointsMaterial.size = pointSize.value
       pointsMaterial.color.set(pointColor.value)
@@ -551,7 +616,7 @@ export function useFaceMesh(videoRef, canvasContainer) {
   watch([viewMode, showWireframe, opacity, meshDensity, hasGeometry, pointSize, pointColor, wireframeColor, materialType, glowIntensity, showParticles, showHat], updateVisibility)
 
   // --- 纹理加载 ---
-  const loadTexture = (file) => {
+  const loadTexture = (file: File | null) => {
     if (!file) return
     if (currentTexture) {
       currentTexture.dispose()
@@ -559,6 +624,8 @@ export function useFaceMesh(videoRef, canvasContainer) {
     }
     const reader = new FileReader()
     reader.onload = (e) => {
+      const result = e.target?.result
+      if (typeof result !== 'string') return
       const img = new Image()
       img.onload = () => {
         const texture = new THREE.Texture(img)
@@ -567,20 +634,21 @@ export function useFaceMesh(videoRef, canvasContainer) {
         materialType.value = 'texture' // Auto switch
         updateVisibility()
       }
-      img.src = e.target.result
+      img.src = result
     }
     reader.readAsDataURL(file)
   }
 
   // --- 截图功能 ---
   const captureScreenshot = async () => {
-    if (!renderer || !videoRef.value) return
+    if (!renderer || !videoRef.value || !scene || !threeCamera) return
 
     // 1. 创建临时 Canvas
     const canvas = document.createElement('canvas')
     canvas.width = renderer.domElement.width
     canvas.height = renderer.domElement.height
     const ctx = canvas.getContext('2d')
+    if (!ctx) return
 
     // 2. 绘制视频背景
     // 需要处理镜像翻转
@@ -605,7 +673,7 @@ export function useFaceMesh(videoRef, canvasContainer) {
 
   // --- 录制功能 ---
   const startRecording = () => {
-    if (!renderer || !videoRef.value) return
+    if (!renderer || !videoRef.value || !scene || !threeCamera) return
     if (mediaRecorder && mediaRecorder.state === 'recording') return
     if (typeof MediaRecorder === 'undefined') {
       errorMessage.value = '当前浏览器不支持录像功能'
@@ -624,21 +692,22 @@ export function useFaceMesh(videoRef, canvasContainer) {
       errorMessage.value = '当前浏览器不支持 WebM 录像格式'
       return
     }
-    
+
     // 创建混合 Canvas
     const canvas = document.createElement('canvas')
     canvas.width = renderer.domElement.width
     canvas.height = renderer.domElement.height
     const ctx = canvas.getContext('2d')
-    
+    if (!ctx) return
+
     const stream = canvas.captureStream(30) // 30 FPS
     mediaRecorder = new MediaRecorder(stream, { mimeType })
     recordedChunks = []
-    
+
     mediaRecorder.ondataavailable = (e) => {
       if (e.data.size > 0) recordedChunks.push(e.data)
     }
-    
+
     mediaRecorder.onstop = () => {
       const blob = new Blob(recordedChunks, { type: 'video/webm' })
       const url = URL.createObjectURL(blob)
@@ -656,22 +725,22 @@ export function useFaceMesh(videoRef, canvasContainer) {
     const drawLoop = () => {
       if (mediaRecorder && mediaRecorder.state === 'recording') {
         ctx.clearRect(0, 0, canvas.width, canvas.height)
-        
+
         // 绘制视频
         ctx.save()
         ctx.translate(canvas.width, 0)
         ctx.scale(-1, 1)
-        ctx.drawImage(videoRef.value, 0, 0, canvas.width, canvas.height)
+        ctx.drawImage(videoRef.value as HTMLVideoElement, 0, 0, canvas.width, canvas.height)
         ctx.restore()
-        
+
         // 绘制 3D
-        renderer.render(scene, threeCamera)
+        renderer.render(scene as Scene, threeCamera as PerspectiveCamera)
         ctx.drawImage(renderer.domElement, 0, 0)
-        
+
         requestAnimationFrame(drawLoop)
       }
     }
-    
+
     mediaRecorder.start()
     isRecording.value = true
     drawLoop()
@@ -719,7 +788,7 @@ export function useFaceMesh(videoRef, canvasContainer) {
     disposeResources()
     errorMessage.value = ''
     isLoading.value = true
-    
+
     // 1. 权限预检
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true })
@@ -729,7 +798,7 @@ export function useFaceMesh(videoRef, canvasContainer) {
     }
 
     // 2. 超时保护
-    loadingTimer = setTimeout(() => {
+    loadingTimer = window.setTimeout(() => {
       if (isLoading.value) {
         errorMessage.value = '初始化超时，请检查网络或权限。'
         isLoading.value = false
@@ -745,7 +814,7 @@ export function useFaceMesh(videoRef, canvasContainer) {
       return
     }
 
-      // 4. 加载 MediaPipe
+    // 4. 加载 MediaPipe
     try {
       const [faceMeshModule, cameraUtilsModule] = await Promise.all([
         import('@mediapipe/face_mesh'),
@@ -753,19 +822,19 @@ export function useFaceMesh(videoRef, canvasContainer) {
       ])
 
       // 尝试多种方式获取构造函数
-      const FaceMeshCtor = 
-        faceMeshModule.FaceMesh || 
-        faceMeshModule.default?.FaceMesh || 
-        faceMeshModule.default || 
-        (typeof window !== 'undefined' && window.FaceMesh) ||
-        (typeof globalThis !== 'undefined' && globalThis.FaceMesh)
+      const FaceMeshCtor =
+        (faceMeshModule as { FaceMesh?: FaceMeshConstructor }).FaceMesh ||
+        (faceMeshModule as { default?: { FaceMesh?: FaceMeshConstructor } }).default?.FaceMesh ||
+        (faceMeshModule as { default?: FaceMeshConstructor }).default ||
+        (typeof window !== 'undefined' ? (window as typeof window & { FaceMesh?: FaceMeshConstructor }).FaceMesh : undefined) ||
+        (typeof globalThis !== 'undefined' ? (globalThis as typeof globalThis & { FaceMesh?: FaceMeshConstructor }).FaceMesh : undefined)
 
-      const CameraCtor = 
-        cameraUtilsModule.Camera || 
-        cameraUtilsModule.default?.Camera || 
-        cameraUtilsModule.default || 
-        (typeof window !== 'undefined' && window.Camera) ||
-        (typeof globalThis !== 'undefined' && globalThis.Camera)
+      const CameraCtor =
+        (cameraUtilsModule as { Camera?: CameraConstructor }).Camera ||
+        (cameraUtilsModule as { default?: { Camera?: CameraConstructor } }).default?.Camera ||
+        (cameraUtilsModule as { default?: CameraConstructor }).default ||
+        (typeof window !== 'undefined' ? (window as typeof window & { Camera?: CameraConstructor }).Camera : undefined) ||
+        (typeof globalThis !== 'undefined' ? (globalThis as typeof globalThis & { Camera?: CameraConstructor }).Camera : undefined)
 
       if (!FaceMeshCtor) throw new Error('FaceMesh 构造函数未找到')
       if (!CameraCtor) throw new Error('Camera 构造函数未找到')
@@ -785,12 +854,12 @@ export function useFaceMesh(videoRef, canvasContainer) {
       }
 
       const bases = resolveCdnBases()
-      let lastError = null
+      let lastError: Error | null = null
 
       for (const base of bases) {
         try {
           console.log('Initializing FaceMesh with resource base:', base)
-          const locateFile = (file) => BUNDLED_FACE_MESH_ASSETS[file] || `${base}${file}`
+          const locateFile = (file: string) => BUNDLED_FACE_MESH_ASSETS[file] || `${base}${file}`
           faceMesh = new FaceMeshCtor({ locateFile })
           faceMesh.setOptions({
             maxNumFaces: 1,
@@ -809,8 +878,8 @@ export function useFaceMesh(videoRef, canvasContainer) {
           break
         } catch (e) {
           console.error(`FaceMesh init failed on base ${base}:`, e)
-          lastError = e
-          try { await faceMesh?.close() } catch (_) {}
+          lastError = e instanceof Error ? e : new Error(String(e))
+          try { await faceMesh?.close() } catch (_) { /* noop */ }
           faceMesh = null
         }
       }
@@ -821,12 +890,12 @@ export function useFaceMesh(videoRef, canvasContainer) {
 
       // 5. 启动摄像头
       if (!videoRef.value) throw new Error('未找到视频元素')
-      
+
       camera = new CameraCtor(videoRef.value, {
         onFrame: async () => {
           if (faceMesh) {
             try {
-              await faceMesh.send({ image: videoRef.value })
+              await faceMesh.send({ image: videoRef.value as HTMLVideoElement })
             } catch (e) {
               console.error('FaceMesh send error:', e)
             }
@@ -836,25 +905,26 @@ export function useFaceMesh(videoRef, canvasContainer) {
         height: isMobile ? 540 : 720,
         facingMode: 'user'
       })
-      
+
       console.log('Starting Camera...')
       try {
         await camera.start()
       } catch (e) {
-        const reason = e?.name === 'NotAllowedError'
+        const err = e as Error & { name?: string; message?: string }
+        const reason = err?.name === 'NotAllowedError'
           ? '无法访问摄像头：浏览器拒绝了权限，请在地址栏左侧的相机权限设置中允许访问后重试。'
-          : `无法访问摄像头：${e?.message || e}`
+          : `无法访问摄像头：${err?.message || err}`
         throw new Error(reason)
       }
       console.log('Camera started')
-      
+
       isLoading.value = false
-      if (loadingTimer) clearTimeout(loadingTimer)
+      if (loadingTimer !== null) clearTimeout(loadingTimer)
       updateVisibility()
 
     } catch (e) {
       console.error('Setup failed:', e)
-      errorMessage.value = e.message || '启动失败'
+      errorMessage.value = e instanceof Error ? e.message : '启动失败'
       isLoading.value = false
       disposeResources()
     }
@@ -864,7 +934,7 @@ export function useFaceMesh(videoRef, canvasContainer) {
     stopMedia()
     disposeResources()
     detachResizeListener()
-    if (loadingTimer) clearTimeout(loadingTimer)
+    if (loadingTimer !== null) clearTimeout(loadingTimer)
   })
 
   return {
