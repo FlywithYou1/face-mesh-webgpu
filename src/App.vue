@@ -334,29 +334,54 @@ const onResults = (results) => {
     const positions = pointCloud.geometry.attributes.position.array
     const meshPositions = faceMeshObject.geometry.attributes.position.array
     
-    // 映射：MediaPipe (0,0 左上) -> Three.js (0,0 中心)
-    // 我们需要将 3D 网格与视频源对齐。
-    // 在没有精确相机内参的情况下，这很棘手。
-    // 我们将使用启发式缩放。
-    
-    const aspect = window.innerWidth / window.innerHeight
+    // 获取视频和屏幕尺寸以处理 object-cover 和镜像
+    const video = videoRef.value
+    if (!video || video.videoWidth === 0) return
+
+    const videoW = video.videoWidth
+    const videoH = video.videoHeight
+    const screenW = window.innerWidth
+    const screenH = window.innerHeight
+
+    const videoAspect = videoW / videoH
+    const screenAspect = screenW / screenH
+
+    let renderW, renderH
+    // 计算 object-cover 下的渲染尺寸
+    if (screenAspect > videoAspect) {
+      renderW = screenW
+      renderH = screenW / videoAspect
+    } else {
+      renderH = screenH
+      renderW = screenH * videoAspect
+    }
+
+    // Three.js 视口计算
     const fov = threeCamera.fov * (Math.PI / 180)
-    const heightAtZ = 2 * threeCamera.position.z * Math.tan(fov / 2)
-    const widthAtZ = heightAtZ * aspect
-    
-    // 匹配视频源的缩放因子
-    const scaleX = widthAtZ 
-    const scaleY = heightAtZ 
+    const distance = threeCamera.position.z
+    const visibleHeight = 2 * Math.tan(fov / 2) * distance
+    // 像素到世界单位的转换比例
+    const pxToWorld = visibleHeight / screenH
 
     landmarks.forEach((landmark, index) => {
-      // MediaPipe: x [0, 1], y [0, 1], z (按宽度缩放)
-      // Three.js: x [-w/2, w/2], y [h/2, -h/2]
+      // 1. 计算相对于视频中心的像素坐标
+      // MediaPipe x,y 是 0-1 归一化的
+      const dx = (landmark.x - 0.5) * renderW
+      const dy = (landmark.y - 0.5) * renderH
       
-      const x = (0.5 - landmark.x) * scaleX
-      const y = (0.5 - landmark.y) * scaleY
-      // Z 需要类似地缩放。MediaPipe Z 大致相对于头部宽度为 -1 到 1
-      // 增加 Z 轴深度感
-      const z = -landmark.z * scaleX * 2.0 
+      // 2. 转换为 Three.js 世界坐标
+      // X 轴取反：因为视频被 CSS 镜像翻转了 (-scale-x-100)，
+      // 原本在左边(x<0.5, dx<0)的点现在显示在右边，所以世界坐标 x 应该为正。
+      // -dx 正好满足这个需求。
+      const x = -dx * pxToWorld
+      
+      // Y 轴取反：MediaPipe y 向下，Three.js y 向上
+      const y = -dy * pxToWorld
+      
+      // Z 轴：MediaPipe z 是按图像宽度归一化的
+      // 我们也按渲染宽度将其转换为世界单位
+      // 适当调整 Z 深度因子以获得更好的 3D 感
+      const z = -landmark.z * renderW * pxToWorld
       
       // 更新点云
       positions[index * 3] = x
@@ -380,13 +405,25 @@ const onResults = (results) => {
 onMounted(async () => {
   await initThreeJS()
   
+  // 动态确定资源路径：优先使用当前脚本加载路径，如果检测到是 jsdelivr (已知有问题) 则强制回退到 unpkg
+  const faceMeshScript = Array.from(document.scripts).find(s => s.src.includes('face_mesh.js'));
+  let resourceBase = 'https://unpkg.com/@mediapipe/face_mesh/'; // 默认使用 unpkg 作为更稳定的源
+  
+  if (faceMeshScript) {
+    const scriptUrl = faceMeshScript.src;
+    // 如果当前脚本不是 jsdelivr，或者我们想强制避开 jsdelivr 的 data 文件问题
+    if (!scriptUrl.includes('jsdelivr')) {
+      resourceBase = scriptUrl.substring(0, scriptUrl.lastIndexOf('/') + 1);
+    }
+  }
+
   faceMesh = new window.FaceMesh({locateFile: (file) => {
-    return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
+    return `${resourceBase}${file}`;
   }});
   
   faceMesh.setOptions({
     maxNumFaces: 1,
-    refineLandmarks: true,
+    refineLandmarks: false, // Set to false to avoid crash with enableFaceGeometry (478 vs 468 landmarks mismatch)
     minDetectionConfidence: 0.5,
     minTrackingConfidence: 0.5,
     enableFaceGeometry: true // 请求几何数据
