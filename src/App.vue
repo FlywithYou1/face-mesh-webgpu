@@ -215,6 +215,7 @@ let normalsFrame = 0
 let loadingTimer = null
 let animationLoopAttached = false
 const FACE_MESH_VERSION = '0.4.1633559619'
+const maxPoints = 468
 
 // 三角剖分索引会在启用几何数据后由 MediaPipe 返回
 let triangulationIndices = null
@@ -314,6 +315,14 @@ const initThreeJS = async () => {
   if (!renderer) {
     throw new Error('渲染器初始化失败')
   }
+  // 让渲染器背景透明，视频能透出
+  renderer.setClearColor(0x000000, 0)
+  renderer.domElement.style.position = 'absolute'
+  renderer.domElement.style.top = '0'
+  renderer.domElement.style.left = '0'
+  renderer.domElement.style.width = '100%'
+  renderer.domElement.style.height = '100%'
+  renderer.domElement.style.pointerEvents = 'none'
   canvasContainer.value.appendChild(renderer.domElement)
 
   // 灯光
@@ -324,8 +333,7 @@ const initThreeJS = async () => {
   directionalLight.position.set(0, 1, 1)
   scene.add(directionalLight)
 
-  // 初始化几何体；低精度模式减少点数以提升性能
-  const maxPoints = meshDensity.value === 'low' ? 156 : 468
+  // 初始化几何体；保持 468 顶点以兼容官方三角索引，低精度仅在更新阶段做抽样
   const positions = new Float32Array(maxPoints * 3)
   
   // 1. 点云 (矩阵视图)
@@ -334,10 +342,11 @@ const initThreeJS = async () => {
   
   pointsMaterial = new THREE.PointsMaterial({
     color: 0x6ee7ff,
-    size: isMobile ? 0.045 : 0.028,
-    sizeAttenuation: true,
+    size: isMobile ? 4 : 3, // WebGPU 下 size 单位可能不同，尝试增大
+    sizeAttenuation: false, // 暂时关闭距离衰减以排除深度问题
     transparent: true,
-    opacity: 0.9
+    opacity: 0.9,
+    depthTest: false
   })
   
   pointCloud = new THREE.Points(pointsGeometry, pointsMaterial)
@@ -347,13 +356,16 @@ const initThreeJS = async () => {
   faceGeometry = new THREE.BufferGeometry()
   faceGeometry.setAttribute('position', new THREE.BufferAttribute(positions.slice(), 3))
   
-  faceMaterial = new THREE.MeshPhongMaterial({
+  // 使用 Standard 材质以获得更好的 WebGPU 兼容性
+  faceMaterial = new THREE.MeshStandardMaterial({
     color: 0xffffff,
     wireframe: true,
     side: THREE.DoubleSide,
     transparent: true,
     opacity: 0.5,
-    flatShading: true
+    flatShading: true,
+    roughness: 0.5,
+    metalness: 0.1
   })
   
   faceMeshObject = new THREE.Mesh(faceGeometry, faceMaterial)
@@ -386,14 +398,22 @@ const updateVisibility = () => {
     pointCloud.visible = true
     faceMeshObject.visible = false
     if (videoRef.value) videoRef.value.style.display = 'block'
-    // 摄像头覆盖层的透明背景
-    // WebGPURenderer 处理 alpha 的方式不同，但在构造函数中设置 alpha:true 有所帮助
-  } else {
-    const useMesh = meshDensity.value === 'high'
-    pointCloud.visible = !useMesh
-    faceMeshObject.visible = useMesh
+    // 恢复点云大小
     if (pointsMaterial) {
-      pointsMaterial.size = useMesh ? (isMobile ? 0.045 : 0.028) : (isMobile ? 0.06 : 0.04)
+      // 恢复点云大小
+      pointsMaterial.size = isMobile ? 4 : 3
+      pointsMaterial.needsUpdate = true
+    }
+  } else {
+    // 在 3D 白模模式下，只要有几何数据就显示网格，忽略精度设置
+    // 低精度设置现在仅影响点云的密度（如果回退到点云显示的话）
+    const canShowMesh = hasGeometry.value
+    pointCloud.visible = !canShowMesh
+    faceMeshObject.visible = canShowMesh
+    
+    if (pointsMaterial) {
+      const isHighDensity = meshDensity.value === 'high'
+      pointsMaterial.size = isHighDensity ? (isMobile ? 2 : 1.5) : (isMobile ? 4 : 3)
       pointsMaterial.needsUpdate = true
     }
     faceMaterial.wireframe = showWireframe.value
@@ -402,7 +422,7 @@ const updateVisibility = () => {
   }
 }
 
-watch([viewMode, showWireframe, opacity, meshDensity], updateVisibility)
+watch([viewMode, showWireframe, opacity, meshDensity, hasGeometry], updateVisibility)
 
 const onResults = (results) => {
   isLoading.value = false
@@ -461,37 +481,46 @@ const onResults = (results) => {
     const visibleHeight = 2 * Math.tan(fov / 2) * distance
     // 像素到世界单位的转换比例
     const pxToWorld = visibleHeight / screenH
-    // 低精度模式下对 468 点做抽样以降低开销
+    
+    // 低精度模式下对点云做抽样，但 3D 网格必须保持全量顶点以维持拓扑结构
     const targetPoints = meshDensity.value === 'low' ? 156 : landmarks.length
-    const step = Math.ceil(landmarks.length / targetPoints)
-    let writeIndex = 0
+    const step = meshDensity.value === 'low' ? Math.ceil(landmarks.length / targetPoints) : 1
 
-    for (let i = 0; i < landmarks.length && writeIndex < targetPoints; i += step) {
-      const landmark = landmarks[i]
+    for (let i = 0; i < maxPoints; i++) {
+      if (i < landmarks.length) {
+        const landmark = landmarks[i]
 
-      // 像素坐标（相对视频中心）
-      const dx = (landmark.x - 0.5) * renderW
-      const dy = (landmark.y - 0.5) * renderH
-      
-      // 转换为 Three.js 世界坐标
-      const x = -dx * pxToWorld // X 轴反转匹配镜像
-      const y = -dy * pxToWorld // Y 轴反转使坐标朝上
-      const z = -landmark.z * renderW * pxToWorld // Z 按视频宽度缩放
-      
-      const base = writeIndex * 3
-      positions[base] = x
-      positions[base + 1] = y
-      positions[base + 2] = z
-      
-      if (writeIndex < meshPositions.length / 3) {
+        // 像素坐标（相对视频中心）
+        const dx = (landmark.x - 0.5) * renderW
+        const dy = (landmark.y - 0.5) * renderH
+        
+        // 转换为 Three.js 世界坐标
+        const x = -dx * pxToWorld // X 轴反转匹配镜像
+        const y = -dy * pxToWorld // Y 轴反转使坐标朝上
+        const z = -landmark.z * renderW * pxToWorld // Z 按视频宽度缩放
+        
+        const base = i * 3
+        
+        // 3D 网格：始终更新所有顶点，否则网格会破碎
         meshPositions[base] = x
         meshPositions[base + 1] = y
         meshPositions[base + 2] = z
-      }
 
-      writeIndex++
+        // 点云：根据精度设置进行抽样，隐藏不需要的点
+        if (i % step === 0) {
+          positions[base] = x
+          positions[base + 1] = y
+          positions[base + 2] = z
+        } else {
+          positions[base] = NaN
+          positions[base + 1] = NaN
+          positions[base + 2] = NaN
+        }
+      }
     }
     
+    // 始终绘制所有点，利用 NaN 剔除不可见点
+    pointCloud.geometry.setDrawRange(0, maxPoints)
     pointCloud.geometry.attributes.position.needsUpdate = true
     faceMeshObject.geometry.attributes.position.needsUpdate = true
 
@@ -591,7 +620,7 @@ const startPipeline = async () => {
     return
   }
 
-  const resolution = meshDensity.value === 'low' ? { width: 960, height: 540 } : { width: 1280, height: 720 }
+  const resolution = { width: 1280, height: 720 }
   camera = new CameraCtor(videoRef.value, {
     onFrame: async () => {
       await faceMesh.send({ image: videoRef.value })
@@ -604,6 +633,8 @@ const startPipeline = async () => {
     await camera.start()
     isLoading.value = false
     if (loadingTimer) clearTimeout(loadingTimer)
+    // 确保可见性状态更新（切换分辨率后刷新显示）
+    updateVisibility()
   } catch (e) {
     console.error('摄像头启动失败', e)
     errorMessage.value = '无法访问摄像头，请检查权限或设备。'
@@ -626,8 +657,8 @@ onMounted(async () => {
 
 watch(meshDensity, async (next, prev) => {
   if (next === prev) return
-  if (isLoading.value) return
-  await retryInit()
+  // 仅更新可见性，不重启摄像头，避免黑屏
+  updateVisibility()
 })
 
 const onResize = () => {
